@@ -15,8 +15,8 @@ export default function App() {
     <button
       onClick={() => { setView(target); setSelected(null); }}
       style={{
-        background: view === target ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.1)',
-        border: 'none', color: '#fff', borderRadius: 8,
+        background: view === target ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.07)',
+        border: 'none', color: '#000', borderRadius: 8,
         padding: '6px 14px', cursor: 'pointer', fontSize: 14,
         fontWeight: view === target ? 700 : 400,
       }}
@@ -25,11 +25,11 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f0', fontFamily: 'system-ui, sans-serif' }}>
-      <header style={{ background: '#e3000b', color: '#fff', padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <header style={{ background: '#F5C400', color: '#000', padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 12 }}>
         {selected && (
           <button
             onClick={() => setSelected(null)}
-            style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 14 }}
+            style={{ background: 'rgba(0,0,0,0.1)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 14 }}
           >← Back</button>
         )}
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px' }}>
