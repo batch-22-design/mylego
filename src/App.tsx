@@ -55,7 +55,7 @@ export default function App() {
       </header>
       <main style={{ padding: 24, maxWidth: 1400, margin: '0 auto' }}>
         {selected
-          ? <LegoSetDetail set={selected} />
+          ? <LegoSetDetail set={selected} onRemove={() => { setSelected(null); setRefreshKey(k => k + 1); }} />
           : view === 'sets'
             ? <LegoSetGrid key={refreshKey} onSelect={setSelected} />
             : <AllParts />

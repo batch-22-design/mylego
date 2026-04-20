@@ -2,11 +2,39 @@ import { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 import type { LegoSet, Part } from './supabase';
 
+async function removeSet(setId: number) {
+  // Fetch all parts in this set with their global quantities
+  const { data: setPartRows } = await supabase
+    .from('set_parts')
+    .select('part_id, quantity, parts(id, quantity)')
+    .eq('set_id', setId);
+
+  if (setPartRows && setPartRows.length > 0) {
+    const toDelete: number[] = [];
+    const toUpdate: { id: number; quantity: number }[] = [];
+
+    for (const row of setPartRows as any[]) {
+      const part = row.parts;
+      const newQty = part.quantity - row.quantity;
+      if (newQty <= 0) toDelete.push(part.id);
+      else toUpdate.push({ id: part.id, quantity: newQty });
+    }
+
+    await Promise.all([
+      toDelete.length > 0 ? supabase.from('parts').delete().in('id', toDelete) : null,
+      ...toUpdate.map(({ id, quantity }) => supabase.from('parts').update({ quantity }).eq('id', id)),
+    ]);
+  }
+
+  await supabase.from('set_parts').delete().eq('set_id', setId);
+  await supabase.from('sets').delete().eq('id', setId);
+}
+
 const PART_PLACEHOLDER = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80"%3E%3Crect width="80" height="80" fill="%23f0f0f0"/%3E%3Ctext x="40" y="48" text-anchor="middle" fill="%23ccc" font-size="28"%3E🔩%3C/text%3E%3C/svg%3E';
 
 type SortKey = 'name' | 'color' | 'qty_desc' | 'qty_asc';
 
-export default function SetDetail({ set }: { set: LegoSet }) {
+export default function SetDetail({ set, onRemove }: { set: LegoSet; onRemove: () => void }) {
   const [parts, setParts] = useState<Part[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -15,6 +43,8 @@ export default function SetDetail({ set }: { set: LegoSet }) {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [cols, setCols] = useState(4);
   const [lightbox, setLightbox] = useState<Part | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     supabase
@@ -98,6 +128,10 @@ export default function SetDetail({ set }: { set: LegoSet }) {
         <span style={{ color: '#888', fontSize: 13, marginLeft: 'auto' }}>
           {loading ? 'Loading…' : `${filtered.length} parts`}
         </span>
+        <button
+          onClick={() => setConfirmRemove(true)}
+          style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid #ffcccc', background: '#fff5f5', color: '#cc0000', fontSize: 13, cursor: 'pointer' }}
+        >Remove Set</button>
       </div>
 
       {viewMode === 'grid' ? (
@@ -158,6 +192,34 @@ export default function SetDetail({ set }: { set: LegoSet }) {
             ))}
           </tbody>
         </table>
+      )}
+
+      {confirmRemove && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 400, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <h2 style={{ margin: '0 0 10px', fontSize: 18, fontWeight: 800 }}>Remove "{set.name}"?</h2>
+            <p style={{ color: '#666', fontSize: 14, margin: '0 0 24px' }}>
+              This will remove the set and decrement all its parts from your collection. Parts only in this set will be deleted.
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setConfirmRemove(false)} disabled={removing}
+                style={{ padding: '10px 18px', borderRadius: 10, border: '1.5px solid #ddd', background: '#fff', cursor: 'pointer', fontSize: 15 }}>
+                Cancel
+              </button>
+              <button
+                disabled={removing}
+                onClick={async () => {
+                  setRemoving(true);
+                  await removeSet(set.id);
+                  onRemove();
+                }}
+                style={{ padding: '10px 20px', borderRadius: 10, border: 'none', background: '#cc0000', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 15 }}
+              >
+                {removing ? 'Removing…' : 'Yes, Remove'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {lightbox && (
