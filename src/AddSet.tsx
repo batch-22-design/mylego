@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { supabase } from './supabase';
 
 const RB_KEY = import.meta.env.VITE_REBRICKABLE_KEY;
@@ -10,10 +10,11 @@ async function rbGet(path: string) {
   return res.json();
 }
 
-async function rbGetAll(path: string) {
+async function rbGetAll(path: string, cancelled: () => boolean) {
   const results: any[] = [];
   let next: string | null = path;
   while (next) {
+    if (cancelled()) throw new Error('CANCELLED');
     const data = await rbGet(next);
     results.push(...data.results);
     next = data.next ? data.next.replace('https://rebrickable.com/api/v3/lego', '') : null;
@@ -23,7 +24,6 @@ async function rbGetAll(path: string) {
 }
 
 type Props = { onClose: () => void; onAdded: () => void };
-
 type Preview = { name: string; year: number; num_parts: number; image: string | null; set_num: string; theme_id: number };
 
 export default function AddSet({ onClose, onAdded }: Props) {
@@ -32,6 +32,12 @@ export default function AddSet({ onClose, onAdded }: Props) {
   const [status, setStatus] = useState<'idle' | 'previewing' | 'adding'>('idle');
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
+  const cancelledRef = useRef(false);
+
+  function handleCancel() {
+    cancelledRef.current = true;
+    onClose();
+  }
 
   async function handlePreview() {
     setError('');
@@ -50,56 +56,89 @@ export default function AddSet({ onClose, onAdded }: Props) {
 
   async function handleAdd() {
     if (!preview) return;
+    cancelledRef.current = false;
     setStatus('adding');
     setError('');
+    const cancelled = () => cancelledRef.current;
+
     try {
-      // Check for duplicate
       const { data: existing } = await supabase.from('sets').select('id').eq('set_number', preview.set_num).maybeSingle();
       if (existing) { setError('This set is already in your collection.'); setStatus('idle'); return; }
 
       setProgress('Fetching parts from Rebrickable…');
       const setNum = preview.set_num;
       const [rbParts, themeData] = await Promise.all([
-        rbGetAll(`/sets/${setNum}/parts/?page_size=500`),
+        rbGetAll(`/sets/${setNum}/parts/?page_size=500`, cancelled),
         rbGet(`/themes/${preview.theme_id}/`).catch(() => null),
       ]);
+      if (cancelled()) return;
 
       setProgress('Saving set…');
       const { data: setRow, error: setErr } = await supabase
         .from('sets')
         .insert({ set_number: preview.set_num, name: preview.name, year: preview.year, piece_count: preview.num_parts, theme: themeData?.name ?? String(preview.theme_id), image_url: preview.image })
-        .select('id')
-        .single();
+        .select('id').single();
       if (setErr) throw new Error(setErr.message);
       const setId = setRow.id;
 
+      // Batch: fetch all existing parts matching these part_nums in one query
       setProgress(`Saving ${rbParts.length} parts…`);
-      for (let i = 0; i < rbParts.length; i++) {
-        const p = rbParts[i];
-        const partNum = p.part.part_num;
-        const color = p.color.name;
-        const imageUrl = p.part.part_img_url ?? null;
-        const qty = p.quantity;
+      const partNums = [...new Set(rbParts.map((p: any) => p.part.part_num as string))];
+      const { data: existingParts } = await supabase.from('parts').select('id, quantity, part_num, color').in('part_num', partNums);
+      const existingMap = new Map((existingParts ?? []).map((p: any) => [`${p.part_num}|${p.color}`, p]));
 
-        // Upsert part (increment global quantity on conflict)
-        const { data: existing } = await supabase.from('parts').select('id, quantity').eq('part_num', partNum).eq('color', color).maybeSingle();
-        let partId: number;
-        if (existing) {
-          await supabase.from('parts').update({ quantity: existing.quantity + qty, image_url: imageUrl }).eq('id', existing.id);
-          partId = existing.id;
+      // Split into new vs existing
+      const toInsert: any[] = [];
+      const toUpdate: { id: number; quantity: number }[] = [];
+      for (const p of rbParts) {
+        const key = `${p.part.part_num}|${p.color.name}`;
+        const ex = existingMap.get(key);
+        if (ex) {
+          toUpdate.push({ id: ex.id, quantity: ex.quantity + p.quantity });
         } else {
-          const { data: inserted } = await supabase.from('parts').insert({ part_num: partNum, part_name: p.part.name, color, quantity: qty, image_url: imageUrl }).select('id').single();
-          partId = inserted!.id;
+          toInsert.push({ part_num: p.part.part_num, part_name: p.part.name, color: p.color.name, quantity: p.quantity, image_url: p.part.part_img_url ?? null });
         }
-
-        await supabase.from('set_parts').upsert({ set_id: setId, part_id: partId, quantity: qty });
-
-        if (i % 20 === 0) setProgress(`Saving parts… ${i + 1}/${rbParts.length}`);
       }
 
-      setProgress('Done!');
-      setTimeout(() => { onAdded(); onClose(); }, 800);
+      // Batch insert new parts
+      let insertedParts: any[] = [];
+      if (toInsert.length > 0) {
+        if (cancelled()) return;
+        const { data } = await supabase.from('parts').insert(toInsert).select('id, part_num, color');
+        insertedParts = data ?? [];
+      }
+
+      // Update existing parts quantities in parallel batches of 20
+      if (toUpdate.length > 0) {
+        if (cancelled()) return;
+        setProgress(`Updating ${toUpdate.length} existing parts…`);
+        for (let i = 0; i < toUpdate.length; i += 20) {
+          if (cancelled()) return;
+          await Promise.all(toUpdate.slice(i, i + 20).map(({ id, quantity }) =>
+            supabase.from('parts').update({ quantity }).eq('id', id)
+          ));
+        }
+      }
+
+      // Batch insert set_parts
+      if (cancelled()) return;
+      setProgress('Linking parts to set…');
+      const insertedMap = new Map(insertedParts.map((p: any) => [`${p.part_num}|${p.color}`, p.id]));
+      const setPartsToInsert = rbParts.map((p: any) => {
+        const key = `${p.part.part_num}|${p.color.name}`;
+        const ex = existingMap.get(key);
+        const partId = ex ? ex.id : insertedMap.get(key);
+        return partId ? { set_id: setId, part_id: partId, quantity: p.quantity } : null;
+      }).filter(Boolean);
+
+      await supabase.from('set_parts').insert(setPartsToInsert);
+
+      if (!cancelled()) {
+        setProgress('Done!');
+        setTimeout(() => { onAdded(); onClose(); }, 600);
+      }
     } catch (e: any) {
+      if (e.message === 'CANCELLED') return;
       setError(e.message);
       setStatus('idle');
       setProgress('');
@@ -109,8 +148,7 @@ export default function AddSet({ onClose, onAdded }: Props) {
   const busy = status !== 'idle';
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-      onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div style={{ background: '#fff', borderRadius: 16, padding: 32, width: '100%', maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
         <h2 style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 800 }}>Add a Set</h2>
 
@@ -146,7 +184,7 @@ export default function AddSet({ onClose, onAdded }: Props) {
         )}
 
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <button onClick={onClose} disabled={busy}
+          <button onClick={handleCancel}
             style={{ padding: '10px 18px', borderRadius: 10, border: '1.5px solid #ddd', background: '#fff', cursor: 'pointer', fontSize: 15 }}>
             Cancel
           </button>
