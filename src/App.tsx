@@ -2,6 +2,7 @@ import { useState } from 'react';
 import LegoSetGrid from './SetGrid';
 import LegoSetDetail from './SetDetail';
 import AllParts from './AllParts';
+import AddSet from './AddSet';
 import type { LegoSet } from './supabase';
 import './App.css';
 
@@ -10,6 +11,8 @@ type View = 'sets' | 'parts';
 export default function App() {
   const [view, setView] = useState<View>('sets');
   const [selected, setSelected] = useState<LegoSet | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const navBtn = (label: string, target: View): React.ReactNode => (
     <button
@@ -43,6 +46,10 @@ export default function App() {
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
             {navBtn('Sets', 'sets')}
             {navBtn('All Parts', 'parts')}
+            <button onClick={() => setShowAdd(true)}
+              style={{ background: 'rgba(0,0,0,0.15)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>
+              + Add Set
+            </button>
           </div>
         )}
       </header>
@@ -50,10 +57,16 @@ export default function App() {
         {selected
           ? <LegoSetDetail set={selected} />
           : view === 'sets'
-            ? <LegoSetGrid onSelect={setSelected} />
+            ? <LegoSetGrid key={refreshKey} onSelect={setSelected} />
             : <AllParts />
         }
       </main>
+      {showAdd && (
+        <AddSet
+          onClose={() => setShowAdd(false)}
+          onAdded={() => { setRefreshKey(k => k + 1); setView('sets'); }}
+        />
+      )}
     </div>
   );
 }
