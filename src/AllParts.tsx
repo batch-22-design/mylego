@@ -1,0 +1,173 @@
+import { useEffect, useState } from 'react';
+import { supabase } from './supabase';
+import type { Part } from './supabase';
+
+const PART_PLACEHOLDER = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80"%3E%3Crect width="80" height="80" fill="%23f0f0f0"/%3E%3Ctext x="40" y="48" text-anchor="middle" fill="%23ccc" font-size="28"%3E🔩%3C/text%3E%3C/svg%3E';
+
+type SortKey = 'name' | 'color' | 'qty_desc' | 'qty_asc';
+
+export default function AllParts() {
+  const [parts, setParts] = useState<Part[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [colorFilter, setColorFilter] = useState('');
+  const [sort, setSort] = useState<SortKey>('color');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
+  const [cols, setCols] = useState(4);
+  const [lightbox, setLightbox] = useState<Part | null>(null);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 200;
+
+  useEffect(() => {
+    supabase.from('parts').select('*').then(({ data }) => {
+      setParts(data ?? []);
+      setLoading(false);
+    });
+  }, []);
+
+  const colors = [...new Set(parts.map(p => p.color))].sort();
+
+  const filtered = parts
+    .filter(p => {
+      const matchSearch = !search || p.part_name.toLowerCase().includes(search.toLowerCase()) || p.part_num.includes(search);
+      const matchColor = !colorFilter || p.color === colorFilter;
+      return matchSearch && matchColor;
+    })
+    .sort((a, b) => {
+      if (sort === 'name') return a.part_name.localeCompare(b.part_name);
+      if (sort === 'color') return a.color.localeCompare(b.color) || a.part_name.localeCompare(b.part_name);
+      if (sort === 'qty_desc') return b.quantity - a.quantity;
+      return a.quantity - b.quantity;
+    });
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  // Reset page when filters change
+  useEffect(() => { setPage(0); }, [search, colorFilter, sort]);
+
+  const selectStyle: React.CSSProperties = {
+    padding: '7px 10px', borderRadius: 8, border: '1px solid #ddd',
+    fontSize: 13, background: '#fff', cursor: 'pointer',
+  };
+  const btnStyle = (active: boolean): React.CSSProperties => ({
+    padding: '7px 12px', borderRadius: 8, border: '1px solid #ddd',
+    fontSize: 13, background: active ? '#e63946' : '#fff',
+    color: active ? '#fff' : '#333', cursor: 'pointer', fontWeight: active ? 600 : 400,
+  });
+
+  if (loading) return <p style={{ textAlign: 'center', marginTop: 60, color: '#888' }}>Loading parts…</p>;
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          type="text"
+          placeholder="Search parts…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          style={{ ...selectStyle, width: 200 }}
+        />
+        <select value={colorFilter} onChange={e => setColorFilter(e.target.value)} style={selectStyle}>
+          <option value="">All colors</option>
+          {colors.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={sort} onChange={e => setSort(e.target.value as SortKey)} style={selectStyle}>
+          <option value="color">Sort: Color</option>
+          <option value="name">Sort: Name</option>
+          <option value="qty_desc">Sort: Qty ↓</option>
+          <option value="qty_asc">Sort: Qty ↑</option>
+        </select>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button style={btnStyle(viewMode === 'grid')} onClick={() => setViewMode('grid')}>⊞ Grid</button>
+          <button style={btnStyle(viewMode === 'list')} onClick={() => setViewMode('list')}>☰ List</button>
+        </div>
+        {viewMode === 'grid' && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            {[3, 4, 5, 6].map(n => (
+              <button key={n} style={btnStyle(cols === n)} onClick={() => setCols(n)}>{n}</button>
+            ))}
+          </div>
+        )}
+        <span style={{ color: '#888', fontSize: 13, marginLeft: 'auto' }}>
+          {filtered.length.toLocaleString()} parts
+        </span>
+      </div>
+
+      {viewMode === 'grid' ? (
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 10 }}>
+          {paginated.map(part => (
+            <div key={part.id} onClick={() => setLightbox(part)}
+              style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.07)', cursor: 'pointer' }}>
+              <img src={part.image_url ?? PART_PLACEHOLDER} alt={part.part_name}
+                style={{ width: '100%', height: 100, objectFit: 'contain', background: '#fff', padding: 8 }}
+                onError={e => { (e.currentTarget as HTMLImageElement).src = PART_PLACEHOLDER; }} />
+              <div style={{ padding: '8px 10px' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.3, marginBottom: 2 }}>{part.part_name}</div>
+                <div style={{ fontSize: 11, color: '#888' }}>{part.color}</div>
+                <div style={{ fontSize: 11, color: '#aaa' }}>#{part.part_num} · qty {part.quantity}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.07)' }}>
+          <thead>
+            <tr style={{ background: '#f5f5f5', fontSize: 12, color: '#666', textAlign: 'left' }}>
+              <th style={{ padding: '10px 12px', fontWeight: 600 }}>Image</th>
+              <th style={{ padding: '10px 12px', fontWeight: 600 }}>Part</th>
+              <th style={{ padding: '10px 12px', fontWeight: 600 }}>Color</th>
+              <th style={{ padding: '10px 12px', fontWeight: 600 }}>Part #</th>
+              <th style={{ padding: '10px 12px', fontWeight: 600 }}>Total Qty</th>
+            </tr>
+          </thead>
+          <tbody>
+            {paginated.map((part, i) => (
+              <tr key={part.id} onClick={() => setLightbox(part)}
+                style={{ borderTop: '1px solid #f0f0f0', cursor: 'pointer', background: i % 2 === 0 ? '#fff' : '#fafafa' }}
+                onMouseEnter={e => (e.currentTarget as HTMLTableRowElement).style.background = '#fff8f0'}
+                onMouseLeave={e => (e.currentTarget as HTMLTableRowElement).style.background = i % 2 === 0 ? '#fff' : '#fafafa'}>
+                <td style={{ padding: '8px 12px' }}>
+                  <img src={part.image_url ?? PART_PLACEHOLDER} alt={part.part_name}
+                    style={{ width: 48, height: 48, objectFit: 'contain', background: '#fff' }}
+                    onError={e => { (e.currentTarget as HTMLImageElement).src = PART_PLACEHOLDER; }} />
+                </td>
+                <td style={{ padding: '8px 12px', fontSize: 13, fontWeight: 500 }}>{part.part_name}</td>
+                <td style={{ padding: '8px 12px', fontSize: 13, color: '#666' }}>{part.color}</td>
+                <td style={{ padding: '8px 12px', fontSize: 12, color: '#aaa', fontFamily: 'monospace' }}>#{part.part_num}</td>
+                <td style={{ padding: '8px 12px', fontSize: 13, fontWeight: 600 }}>{part.quantity}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 20 }}>
+          <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} style={{ ...btnStyle(false), opacity: page === 0 ? 0.4 : 1 }}>← Prev</button>
+          <span style={{ fontSize: 13, color: '#666' }}>Page {page + 1} of {totalPages}</span>
+          <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page === totalPages - 1} style={{ ...btnStyle(false), opacity: page === totalPages - 1 ? 0.4 : 1 }}>Next →</button>
+        </div>
+      )}
+
+      {lightbox && (
+        <div onClick={() => setLightbox(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 480, width: '90%', textAlign: 'center' }}>
+            <img src={lightbox.image_url ?? PART_PLACEHOLDER} alt={lightbox.part_name}
+              style={{ width: '100%', maxHeight: 320, objectFit: 'contain', marginBottom: 20 }}
+              onError={e => { (e.currentTarget as HTMLImageElement).src = PART_PLACEHOLDER; }} />
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{lightbox.part_name}</div>
+            <div style={{ color: '#666', fontSize: 14, marginBottom: 4 }}>{lightbox.color}</div>
+            <div style={{ color: '#aaa', fontSize: 13 }}>#{lightbox.part_num} · total qty {lightbox.quantity}</div>
+            <button onClick={() => setLightbox(null)}
+              style={{ marginTop: 20, padding: '8px 24px', borderRadius: 8, border: 'none', background: '#e63946', color: '#fff', fontSize: 14, cursor: 'pointer' }}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
